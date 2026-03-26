@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SaturnDexClaw - AI Trading Agent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>&#x1f6f8; SaturnDexClaw</h1>
+    <p class="subtitle">Claude-Powered Trading Agent for SaturnX.cc</p>
+  </header>
+
+  <main>
+    <!-- Setup Panel -->
+    <section id="setup-panel" class="card">
+      <h2>Setup</h2>
+      <div class="form-grid">
+        <label>Claude API Key
+          <input type="password" id="api-key" placeholder="sk-ant-…">
+        </label>
+        <label>Wallet WIF <span class="hint">(leave blank to generate new)</span>
+          <input type="password" id="wif" placeholder="Private key (optional)">
+        </label>
+        <label>Network
+          <select id="network">
+            <option value="devnet">Devnet (testnet)</option>
+            <option value="mainnet">Mainnet</option>
+          </select>
+        </label>
+      </div>
+      <button id="btn-setup" class="btn-primary">Connect</button>
+      <div id="setup-result" class="result hidden"></div>
+    </section>
+
+    <!-- Dashboard (hidden until setup) -->
+    <div id="dashboard" class="hidden">
+
+      <!-- Wallet Info -->
+      <section class="card">
+        <h2>Wallet</h2>
+        <div id="wallet-info" class="mono"></div>
+        <button id="btn-portfolio" class="btn-sm">Refresh Portfolio</button>
+        <div id="portfolio" class="result"></div>
+      </section>
+
+      <!-- Quick Trade -->
+      <section class="card">
+        <h2>Quick Trade</h2>
+        <div class="row">
+          <select id="qt-in" class="token-select"></select>
+          <span class="arrow">&#x2192;</span>
+          <select id="qt-out" class="token-select"></select>
+          <input type="number" id="qt-amount" placeholder="Amount" min="0" step="any">
+          <button id="btn-quote" class="btn-sm">Quote</button>
+          <button id="btn-swap" class="btn-primary">Swap</button>
+        </div>
+        <div id="quote-result" class="result"></div>
+      </section>
+
+      <!-- Scheduled Jobs -->
+      <section class="card">
+        <h2>Scheduled Agent Jobs</h2>
+        <div class="row">
+          <select id="job-in" class="token-select"></select>
+          <span class="arrow">&#x2192;</span>
+          <select id="job-out" class="token-select"></select>
+          <label class="inline">Every
+            <input type="number" id="job-interval" value="5" min="1" step="1">
+          </label>
+          <select id="job-unit">
+            <option value="seconds">Seconds</option>
+            <option value="minutes" selected>Minutes</option>
+            <option value="hours">Hours</option>
+            <option value="days">Days</option>
+            <option value="weeks">Weeks</option>
+            <option value="months">Months</option>
+          </select>
+          <button id="btn-add-job" class="btn-primary">+ Add Job</button>
+        </div>
+        <div id="jobs-list"></div>
+      </section>
+
+      <!-- Live Log -->
+      <section class="card">
+        <h2>Activity Log</h2>
+        <div id="log-area" class="log-area"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

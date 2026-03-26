@@ -1,0 +1,17 @@
+{
+  "name": "saturndexclaw",
+  "version": "1.0.0",
+  "description": "AI-powered trading agent for SaturnX.cc DEX using Claude",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "postinstall": "cd node_modules/saturn-agent-sdk && npm install && npm run build",
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "express": "^4.21.0",
+    "saturn-agent-sdk": "git+https://github.com/Infinite-Star-Studios/SaturnDexAgentSDK.git"
+  }
+}
