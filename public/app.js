@@ -17,6 +17,8 @@ $("#btn-setup").onclick = async () => {
   btn.disabled = true;
   btn.textContent = "Connecting…";
   out.classList.remove("hidden");
+  out.style.color = "var(--muted)";
+  out.textContent = "Verifying Claude API key & connecting to Saturn DEX…";
 
   try {
     const res = await api("/api/setup", {
@@ -40,8 +42,9 @@ $("#btn-setup").onclick = async () => {
     $("#dashboard").classList.remove("hidden");
     $("#wallet-info").textContent = `Address: ${res.address}`;
 
-    await loadTokens();
+    // Start log polling first so user sees token loading activity
     startLogPolling();
+    await loadTokens();
     refreshJobs();
   } catch (err) {
     out.textContent = `Error: ${err.message}`;
@@ -82,10 +85,17 @@ async function loadTokens() {
 
 // ── Portfolio ────────────────────────────────────────────────────────────────
 $("#btn-portfolio").onclick = async () => {
+  $("#portfolio").textContent = "Loading…";
   try {
     const p = await api("/api/portfolio");
-    const balances = p.balances?.fungible || p.balances || p;
-    $("#portfolio").textContent = JSON.stringify(balances, null, 2);
+    const fungible = p.balances?.fungible || [];
+    if (!fungible.length) {
+      $("#portfolio").textContent = "No token balances found for this wallet.";
+      return;
+    }
+    $("#portfolio").textContent = fungible
+      .map((b) => `${b.symbol}: ${b.amount}`)
+      .join("\n");
   } catch (err) {
     $("#portfolio").textContent = `Error: ${err.message}`;
   }
@@ -93,19 +103,36 @@ $("#btn-portfolio").onclick = async () => {
 
 // ── Quick Trade ──────────────────────────────────────────────────────────────
 $("#btn-quote").onclick = async () => {
+  const out = $("#quote-result");
+  out.style.color = "var(--muted)";
+  out.textContent = "Fetching quote from Saturn DEX…";
   try {
-    const q = await api(
+    const data = await api(
       `/api/quote?tokenIn=${$("#qt-in").value}&tokenOut=${$("#qt-out").value}&amount=${$("#qt-amount").value || 1}`
     );
-    $("#quote-result").textContent =
-      `Out: ${q.amountOut}  |  Rate: ${q.exchangeRate}  |  Impact: ${q.priceImpact}%  |  Fees: ${JSON.stringify(q.fees)}`;
+    // QuoteResponse has nested structure: { quote: { amountIn, amountOut, rate, route, hops }, fee: { totalPercent, legs }, priceImpact }
+    const q = data.quote;
+    const fee = data.fee;
+    out.textContent = [
+      `In: ${q.amountIn} ${q.tokenIn}  →  Out: ${q.amountOut} ${q.tokenOut}`,
+      `Rate: ${q.rate}  |  Reverse: ${q.reverseRate}`,
+      `Route: ${q.route.join(" → ")} (${q.hops} hop${q.hops !== 1 ? "s" : ""})`,
+      `Price Impact: ${data.priceImpact}%`,
+      `Fee: ${fee.totalPercent}% — ${fee.description}`,
+      fee.legs.map((l) => `  ${l.leg}: ${l.percent}%`).join("\n"),
+    ].join("\n");
+    out.style.color = "var(--text)";
   } catch (err) {
-    $("#quote-result").textContent = `Error: ${err.message}`;
+    out.textContent = `Error: ${err.message}`;
+    out.style.color = "var(--red)";
   }
 };
 
 $("#btn-swap").onclick = async () => {
   if (!confirm("Execute this swap?")) return;
+  const out = $("#quote-result");
+  out.style.color = "var(--muted)";
+  out.textContent = "Executing swap (quote → safety checks → sign → broadcast → confirm)…";
   try {
     const r = await api("/api/swap", {
       method: "POST",
@@ -116,18 +143,18 @@ $("#btn-swap").onclick = async () => {
         amount: Number($("#qt-amount").value),
       }),
     });
-    $("#quote-result").textContent = `Swap done! TX: ${r.txHash} (${r.status})`;
-    $("#quote-result").style.color = "var(--green)";
+    out.textContent = `Swap confirmed!\nTX: ${r.txHash}\nStatus: ${r.status}\nIn: ${r.amountIn} ${r.tokenIn}  →  Out: ${r.amountOut} ${r.tokenOut}`;
+    out.style.color = "var(--green)";
   } catch (err) {
-    $("#quote-result").textContent = `Error: ${err.message}`;
-    $("#quote-result").style.color = "var(--red)";
+    out.textContent = `Swap failed: ${err.message}`;
+    out.style.color = "var(--red)";
   }
 };
 
 // ── Scheduled Jobs ───────────────────────────────────────────────────────────
 $("#btn-add-job").onclick = async () => {
   try {
-    const job = await api("/api/jobs", {
+    await api("/api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -152,21 +179,25 @@ async function refreshJobs() {
       return;
     }
     container.innerHTML = jobs
-      .map(
-        (j) => `
+      .map((j) => {
+        const last = j.history.length ? j.history[j.history.length - 1] : null;
+        const lastText = last
+          ? `Last: <strong>${last.action}</strong>${last.reason ? ` — ${last.reason}` : ""}${last.txHash ? ` (TX: ${last.txHash.slice(0, 12)}…)` : ""}`
+          : "Waiting for first cycle…";
+        return `
       <div class="job-card">
         <div>
           <span class="pair">${j.pair[0]} → ${j.pair[1]}</span>
           <span class="schedule">every ${j.interval} ${j.unit}</span>
           <span class="status ${j.active ? "status-active" : "status-paused"}">${j.active ? "Active" : "Paused"}</span>
-          ${j.history.length ? `<div class="job-history">Last: ${j.history[j.history.length - 1].action} — ${j.history[j.history.length - 1].reason || ""}</div>` : ""}
+          <div class="job-history">${lastText} (${j.history.length} cycles)</div>
         </div>
         <div class="job-actions">
           <button class="btn-toggle" onclick="toggleJob('${j.id}')">${j.active ? "Pause" : "Resume"}</button>
           <button class="btn-danger" onclick="deleteJob('${j.id}')">Delete</button>
         </div>
-      </div>`
-      )
+      </div>`;
+      })
       .join("");
   } catch (err) {
     console.error(err);
@@ -187,7 +218,7 @@ window.deleteJob = async (id) => {
 // ── Log Polling ──────────────────────────────────────────────────────────────
 function startLogPolling() {
   if (pollTimer) return;
-  pollTimer = setInterval(async () => {
+  const poll = async () => {
     try {
       const logs = await api("/api/logs");
       const area = $("#log-area");
@@ -200,5 +231,7 @@ function startLogPolling() {
       area.scrollTop = area.scrollHeight;
     } catch {}
     refreshJobs();
-  }, 3000);
+  };
+  poll(); // Run immediately
+  pollTimer = setInterval(poll, 2000);
 }

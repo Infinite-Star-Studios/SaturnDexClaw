@@ -70,20 +70,33 @@ Respond ONLY with the JSON object, no markdown fences or extra text.`;
 async function runTradeDecision(job) {
   if (!state.agent || !state.claude) return;
   const [tokenIn, tokenOut] = job.pair;
+  const tag = `[${tokenIn}-${tokenOut}]`;
   try {
-    log(`[${tokenIn}-${tokenOut}] Gathering market data…`);
+    log(`${tag} Gathering market data from Saturn DEX…`);
+
+    log(`${tag} Fetching portfolio, tokens, and quote in parallel…`);
     const [portfolio, tokens, quote] = await Promise.all([
       state.agent.getPortfolio(),
       state.agent.getTokens(),
-      state.agent.quote(tokenIn, tokenOut, 1).catch(() => null),
+      state.agent.quote(tokenIn, tokenOut, 1).catch((e) => {
+        log(`${tag} Quote request failed: ${e.message}`, "warn");
+        return null;
+      }),
     ]);
 
+    const balances = portfolio.balances?.fungible || [];
+    log(`${tag} Portfolio: ${balances.map((b) => `${b.symbol}=${b.amount}`).join(", ") || "empty"}`);
+    log(`${tag} Available tokens: ${tokens.length}`);
+
     if (!quote) {
-      log(`[${tokenIn}-${tokenOut}] Could not get quote, skipping cycle.`, "warn");
+      log(`${tag} No quote available — skipping this cycle`, "warn");
       job.history.push({ ts: Date.now(), action: "skip", reason: "No quote available" });
       return;
     }
 
+    log(`${tag} Quote: 1 ${tokenIn} = ${quote.quote.amountOut} ${tokenOut} | Rate: ${quote.quote.rate} | Route: ${quote.quote.route.join(" → ")} | Impact: ${quote.priceImpact}%`);
+
+    log(`${tag} Sending market data to Claude AI for analysis…`);
     const prompt = buildSystemPrompt(portfolio, tokens, job.pair, quote);
     const resp = await state.claude.messages.create({
       model: "claude-sonnet-4-6",
@@ -92,19 +105,23 @@ async function runTradeDecision(job) {
     });
 
     const text = resp.content[0].text.trim();
+    log(`${tag} Claude response: ${text}`);
+
     let decision;
     try {
       decision = JSON.parse(text);
     } catch {
-      log(`[${tokenIn}-${tokenOut}] Claude returned unparseable response: ${text}`, "warn");
+      log(`${tag} Claude returned unparseable response — skipping`, "warn");
       job.history.push({ ts: Date.now(), action: "error", reason: "Bad AI response" });
       return;
     }
 
     if (decision.action === "trade" && decision.amount > 0) {
-      log(`[${tokenIn}-${tokenOut}] AI says TRADE ${decision.amount} — ${decision.reason}`);
+      log(`${tag} AI DECISION: TRADE ${decision.amount} ${tokenIn} → ${tokenOut}`);
+      log(`${tag} Reason: ${decision.reason}`);
+      log(`${tag} Executing swap via Saturn DEX SDK…`);
       const result = await state.agent.swap(tokenIn, tokenOut, decision.amount);
-      log(`[${tokenIn}-${tokenOut}] Swap executed: ${result.txHash} (${result.status})`);
+      log(`${tag} Swap confirmed! TX: ${result.txHash} | Status: ${result.status} | Out: ${result.amountOut} ${tokenOut}`);
       job.history.push({
         ts: Date.now(),
         action: "trade",
@@ -114,11 +131,12 @@ async function runTradeDecision(job) {
         reason: decision.reason,
       });
     } else {
-      log(`[${tokenIn}-${tokenOut}] AI says HOLD — ${decision.reason}`);
+      log(`${tag} AI DECISION: HOLD`);
+      log(`${tag} Reason: ${decision.reason}`);
       job.history.push({ ts: Date.now(), action: "hold", reason: decision.reason });
     }
   } catch (err) {
-    log(`[${tokenIn}-${tokenOut}] Error: ${err.message}`, "error");
+    log(`${tag} Error in trade cycle: ${err.message}`, "error");
     job.history.push({ ts: Date.now(), action: "error", reason: err.message });
   }
 }
@@ -133,23 +151,30 @@ app.post("/api/setup", async (req, res) => {
 
     state.apiKey = apiKey;
     state.network = network || "devnet";
-    state.claude = new Anthropic({ apiKey });
+    log(`Setting up with network: ${state.network}`);
 
-    // Verify key works
+    state.claude = new Anthropic({ apiKey });
+    log("Verifying Claude API key…");
+
     await state.claude.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 16,
       messages: [{ role: "user", content: "ping" }],
     });
+    log("Claude API key verified successfully");
 
     const netConfig = state.network === "mainnet" ? MAINNET_CONFIG : DEVNET_CONFIG;
+    log(`Saturn API: ${netConfig.saturnApiUrl}`);
 
     if (wif) {
+      log("Importing wallet from WIF…");
       state.wallet = await AgentWallet.fromWIF(wif);
       state.wif = wif;
     } else {
+      log("Generating new wallet…");
       state.wallet = await AgentWallet.generate();
       state.wif = state.wallet.getWIF();
+      log("New wallet generated — save your WIF key!");
     }
 
     state.agent = new SaturnAgent(state.wallet, { network: netConfig });
@@ -161,6 +186,7 @@ app.post("/api/setup", async (req, res) => {
       network: state.network,
     });
   } catch (err) {
+    log(`Setup failed: ${err.message}`, "error");
     res.status(500).json({ error: err.message });
   }
 });
@@ -169,9 +195,14 @@ app.post("/api/setup", async (req, res) => {
 app.get("/api/portfolio", async (_req, res) => {
   if (!state.agent) return res.status(400).json({ error: "Not set up" });
   try {
+    log("Fetching portfolio from Saturn API…");
     const portfolio = await state.agent.getPortfolio();
+    const fungible = portfolio.balances?.fungible || [];
+    log(`Portfolio loaded: ${fungible.length} tokens | Stake: ${portfolio.stake} SOUL | Unclaimed: ${portfolio.unclaimed} KCAL`);
+    fungible.forEach((b) => log(`  ${b.symbol}: ${b.amount}`));
     res.json(portfolio);
   } catch (err) {
+    log(`Portfolio fetch failed: ${err.message}`, "error");
     res.status(500).json({ error: err.message });
   }
 });
@@ -180,9 +211,12 @@ app.get("/api/portfolio", async (_req, res) => {
 app.get("/api/tokens", async (_req, res) => {
   if (!state.agent) return res.status(400).json({ error: "Not set up" });
   try {
+    log("Fetching token list from Saturn DEX API…");
     const tokens = await state.agent.getTokens();
+    log(`Loaded ${tokens.length} tokens from Saturn: ${tokens.map((t) => t.symbol).join(", ")}`);
     res.json(tokens);
   } catch (err) {
+    log(`Token fetch failed: ${err.message}`, "error");
     res.status(500).json({ error: err.message });
   }
 });
@@ -192,9 +226,12 @@ app.get("/api/quote", async (req, res) => {
   if (!state.agent) return res.status(400).json({ error: "Not set up" });
   try {
     const { tokenIn, tokenOut, amount } = req.query;
-    const quote = await state.agent.quote(tokenIn, tokenOut, Number(amount) || 1);
-    res.json(quote);
+    log(`Requesting quote: ${amount} ${tokenIn} → ${tokenOut} from Saturn API…`);
+    const data = await state.agent.quote(tokenIn, tokenOut, Number(amount) || 1);
+    log(`Quote received: ${data.quote.amountIn} ${tokenIn} → ${data.quote.amountOut} ${tokenOut} | Rate: ${data.quote.rate} | Route: ${data.quote.route.join(" → ")} | Impact: ${data.priceImpact}% | Fee: ${data.fee.totalPercent}%`);
+    res.json(data);
   } catch (err) {
+    log(`Quote failed: ${err.message}`, "error");
     res.status(500).json({ error: err.message });
   }
 });
@@ -217,12 +254,17 @@ app.post("/api/jobs", (req, res) => {
     history: [],
   };
 
-  // Run immediately, then on schedule
-  runTradeDecision(job);
-  job.timer = setInterval(() => runTradeDecision(job), ms);
-
   state.jobs.push(job);
-  log(`Job ${id} created: ${tokenIn}-${tokenOut} every ${interval} ${unit}`);
+  log(`Job ${id} created: ${tokenIn} → ${tokenOut} every ${interval} ${unit} (${ms}ms interval)`);
+
+  // Run immediately, then on schedule
+  log(`Job ${id}: Running first trade cycle now…`);
+  runTradeDecision(job);
+  job.timer = setInterval(() => {
+    log(`Job ${id}: Scheduled cycle triggered for ${tokenIn} → ${tokenOut}`);
+    runTradeDecision(job);
+  }, ms);
+
   res.json({ id, pair: job.pair, interval: job.interval, unit: job.unit, active: true });
 });
 
@@ -280,10 +322,13 @@ app.post("/api/swap", async (req, res) => {
   if (!state.agent) return res.status(400).json({ error: "Not set up" });
   try {
     const { tokenIn, tokenOut, amount, slippage } = req.body;
+    log(`Manual swap requested: ${amount} ${tokenIn} → ${tokenOut} (slippage: ${slippage || 3}%)`);
+    log("Executing swap via Saturn DEX SDK (quote → safety → sign → broadcast → confirm)…");
     const result = await state.agent.swap(tokenIn, tokenOut, Number(amount), slippage || 3);
-    log(`Manual swap: ${amount} ${tokenIn} → ${tokenOut} | tx: ${result.txHash}`);
+    log(`Manual swap confirmed! TX: ${result.txHash} | Status: ${result.status} | In: ${result.amountIn} ${tokenIn} | Out: ${result.amountOut} ${tokenOut}`);
     res.json(result);
   } catch (err) {
+    log(`Manual swap failed: ${err.message}`, "error");
     res.status(500).json({ error: err.message });
   }
 });
